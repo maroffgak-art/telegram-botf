@@ -4,7 +4,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-BOT_TOKEN = 8769265261:AAHRyCyMTyLE2XWDeae9VR_1XKWdHLaKAu8
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 class Health(BaseHTTPRequestHandler):
     def do_GET(self):
