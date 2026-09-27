@@ -2,15 +2,17 @@ import os
 import threading
 import sqlite3
 import time
-from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram import Update, ChatPermissions
 from telegram.constants import ParseMode, ChatMemberStatus
 from telegram.error import TelegramError
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    ChatMemberHandler, ContextTypes, filters
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
 )
 
 # ═══════════════════════════════════════════════════
@@ -24,7 +26,7 @@ FLOOD_LIMIT = 5
 FLOOD_WINDOW = 10
 
 # ═══════════════════════════════════════════════════
-#  الكلمات الممنوعة
+#  الكلمات الممنوعة (افتراضي + مخصص)
 # ═══════════════════════════════════════════════════
 
 BANNED_WORDS = [
@@ -41,16 +43,17 @@ BANNED_WORDS = [
     "nigger", "nigga", "motherfucker",
 ]
 
-WHITELIST = ["كلب البحر", "كلب الحراسة", "غبي بمعنى آخر"]
+WHITELIST = ["كلب البحر", "كلب الحراسة"]
 
 
 # ═══════════════════════════════════════════════════
-#  Health Check
+#  Web server (لـ Render)
 # ═══════════════════════════════════════════════════
 
 class Health(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Bot is running")
 
@@ -68,8 +71,8 @@ def run_web():
 # ═══════════════════════════════════════════════════
 
 class Database:
-    def __init__(self):
-        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    def __init__(self, path):
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.lock = threading.Lock()
         self._create_tables()
@@ -82,9 +85,7 @@ class Database:
                     welcome TEXT DEFAULT 'أهلاً {name} في {chat}! 🌹',
                     rules TEXT DEFAULT 'لا توجد قواعد بعد.',
                     anti_links INTEGER DEFAULT 1,
-                    anti_flood INTEGER DEFAULT 1,
-                    anti_forward INTEGER DEFAULT 1,
-                    anti_sticker INTEGER DEFAULT 0
+                    anti_flood INTEGER DEFAULT 1
                 );
                 CREATE TABLE IF NOT EXISTS warns (
                     chat_id INTEGER,
@@ -103,7 +104,7 @@ class Database:
                     ts INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS idx_msg
-                ON messages(chat_id, user_id, ts);
+                    ON messages(chat_id, user_id, ts);
                 CREATE TABLE IF NOT EXISTS stats (
                     chat_id INTEGER,
                     user_id INTEGER,
@@ -131,10 +132,7 @@ class Database:
             return row
 
     def update_chat(self, chat_id, key, value):
-        allowed = (
-            "welcome", "rules", "anti_links", "anti_flood",
-            "anti_forward", "anti_sticker"
-        )
+        allowed = ("welcome", "rules", "anti_links", "anti_flood")
         if key not in allowed:
             return
         with self.lock:
@@ -146,6 +144,9 @@ class Database:
             self.conn.commit()
 
     def toggle(self, chat_id, key):
+        allowed = ("anti_links", "anti_flood")
+        if key not in allowed:
+            return 0
         with self.lock:
             self.get_chat(chat_id)
             self.conn.execute(
@@ -168,7 +169,8 @@ class Database:
             """, (chat_id, user_id))
             self.conn.commit()
             cur = self.conn.execute(
-                "SELECT count FROM warns WHERE chat_id = ? AND user_id = ?",
+                "SELECT count FROM warns "
+                "WHERE chat_id = ? AND user_id = ?",
                 (chat_id, user_id),
             )
             return cur.fetchone()["count"]
@@ -248,7 +250,7 @@ class Database:
             return cur.fetchall()
 
 
-db = Database()
+db = Database(DB_PATH)
 
 
 # ═══════════════════════════════════════════════════
@@ -285,37 +287,38 @@ def contains_banned(text, words):
     return None
 
 
+def extract_text(msg):
+    """يستخرج النص + يكتشف الروابط المخفية في entities."""
+    text = (msg.text or msg.caption or "").lower()
+    has_link = False
+
+    if msg.entities:
+        for ent in msg.entities:
+            if ent.type in ("url", "text_link"):
+                has_link = True
+                break
+
+    return text, has_link
+
+
 # ═══════════════════════════════════════════════════
-#  الأوامر
+#  أوامر
 # ═══════════════════════════════════════════════════
 
 async def cmd_start(update, context):
     await update.message.reply_text(
         "🤖 <b>بوت إدارة المجموعات</b>\n\n"
-        "<b>الأوامر الإدارية:</b>\n"
-        "/ban — حظر (رد)\n"
-        "/unban — فك الحظر (رد)\n"
-        "/kick — طرد (رد)\n"
-        "/mute — كتم (رد)\n"
-        "/unmute — فك الكتم (رد)\n"
-        "/warn — تحذير (رد)\n"
-        "/resetwarn — تصفير التحذيرات (رد)\n\n"
+        "<b>الإدارة:</b>\n"
+        "/ban /unban /kick /mute /unmute — (رد)\n"
+        "/warn /resetwarn — (رد)\n\n"
         "<b>الإعدادات:</b>\n"
-        "/setwelcome &lt;نص&gt; — رسالة الترحيب\n"
-        "/setrules &lt;نص&gt; — قواعد المجموعة\n"
-        "/togglelinks — منع الروابط\n"
-        "/toggleflood — منع الفلود\n"
-        "/toggleforward — منع الفوروارد\n"
-        "/togglesticker — منع الملصقات\n\n"
-        "<b>الكلمات الممنوعة:</b>\n"
-        "/addword &lt;كلمة&gt; — إضافة\n"
-        "/delword &lt;كلمة&gt; — حذف\n"
-        "/words — عرض القائمة\n\n"
+        "/setwelcome &lt;نص&gt;\n"
+        "/setrules &lt;نص&gt;\n"
+        "/togglelinks /toggleflood\n\n"
+        "<b>الكلمات:</b>\n"
+        "/addword /delword /words\n\n"
         "<b>عام:</b>\n"
-        "/id — عرض ID\n"
-        "/stats — إحصائيات\n"
-        "/top — أنشط الأعضاء\n"
-        "/rules — القواعد",
+        "/id /stats /top /rules",
         parse_mode=ParseMode.HTML,
     )
 
@@ -356,7 +359,8 @@ async def cmd_unban(update, context):
     try:
         await context.bot.unban_chat_member(update.effective_chat.id, t.id)
         await update.message.reply_text(
-            f"✅ {t.mention_html()} فُك حظره.", parse_mode=ParseMode.HTML
+            f"✅ {t.mention_html()} فُك حظره.",
+            parse_mode=ParseMode.HTML,
         )
     except TelegramError as e:
         await update.message.reply_text(f"❌ {e}")
@@ -416,7 +420,8 @@ async def cmd_unmute(update, context):
             ),
         )
         await update.message.reply_text(
-            f"🔊 {t.mention_html()} فُك كتمه.", parse_mode=ParseMode.HTML
+            f"🔊 {t.mention_html()} فُك كتمه.",
+            parse_mode=ParseMode.HTML,
         )
     except TelegramError as e:
         await update.message.reply_text(f"❌ {e}")
@@ -516,14 +521,6 @@ async def cmd_toggleflood(update, context):
     await cmd_toggle(update, context, "anti_flood", "منع الفلود")
 
 
-async def cmd_toggleforward(update, context):
-    await cmd_toggle(update, context, "anti_forward", "منع الفوروارد")
-
-
-async def cmd_togglesticker(update, context):
-    await cmd_toggle(update, context, "anti_sticker", "منع الملصقات")
-
-
 async def cmd_addword(update, context):
     if not await require_admin(update, context):
         return
@@ -532,7 +529,9 @@ async def cmd_addword(update, context):
         return
     for w in context.args:
         db.add_word(update.effective_chat.id, w)
-    await update.message.reply_text(f"✅ أُضيفت: {' '.join(context.args)}")
+    await update.message.reply_text(
+        f"✅ أُضيفت: {' '.join(context.args)}"
+    )
 
 
 async def cmd_delword(update, context):
@@ -543,7 +542,9 @@ async def cmd_delword(update, context):
         return
     for w in context.args:
         db.del_word(update.effective_chat.id, w)
-    await update.message.reply_text(f"✅ حُذفت: {' '.join(context.args)}")
+    await update.message.reply_text(
+        f"✅ حُذفت: {' '.join(context.args)}"
+    )
 
 
 async def cmd_words(update, context):
@@ -552,12 +553,12 @@ async def cmd_words(update, context):
     words = db.get_words(update.effective_chat.id)
     if not words:
         await update.message.reply_text(
-            "لا توجد كلمات ممنوعة مخصصة.\n"
+            "لا توجد كلمات مخصصة.\n"
             "(القائمة الافتراضية تحتوي على كلمات السب الشائعة)"
         )
         return
     await update.message.reply_text(
-        "الكلمات الممنوعة المخصصة:\n" + "\n".join(words)
+        "الكلمات المخصصة:\n" + "\n".join(words)
     )
 
 
@@ -566,8 +567,7 @@ async def cmd_stats(update, context):
     try:
         count = await context.bot.get_chat_member_count(c.id)
         await update.message.reply_text(
-            f"📊 <b>{c.title}</b>\n"
-            f"عدد الأعضاء: {count}",
+            f"📊 <b>{c.title}</b>\nعدد الأعضاء: {count}",
             parse_mode=ParseMode.HTML,
         )
     except TelegramError as e:
@@ -627,6 +627,7 @@ async def on_message(update, context):
     msg = update.effective_message
     chat = update.effective_chat
     user = update.effective_user
+
     if not msg or not chat or not user:
         return
     if chat.type not in ("group", "supergroup"):
@@ -637,48 +638,15 @@ async def on_message(update, context):
         return
 
     s = db.get_chat(chat.id)
-
-    # تسجيل الرسالة
     db.log_message(chat.id, user.id)
 
-    # منع الفوروارد
-    if s["anti_forward"] and (msg.forward_origin is not None):
-        try:
-            await msg.delete()
-            await context.bot.send_message(
-                chat.id,
-                f"⚠️ {user.mention_html()} — الفوروارد ممنوع.",
-                parse_mode=ParseMode.HTML,
-            )
-        except TelegramError:
-            pass
+    # استخراج النص + كشف الروابط من entities
+    text, has_link_entity = extract_text(msg)
+
+    if not text and not has_link_entity:
         return
 
-    # منع الملصقات
-    if s["anti_sticker"] and msg.sticker:
-        try:
-            await msg.delete()
-            await context.bot.send_message(
-                chat.id,
-                f"⚠️ {user.mention_html()} — الملصقات ممنوعة.",
-                parse_mode=ParseMode.HTML,
-            )
-        except TelegramError:
-            pass
-        text = (msg.text or msg.caption or "").lower()
-
-    # فحص entities (روابط preview)
-    if msg.entities:
-        for ent in msg.entities:
-            if ent.type in ("url", "text_link"):
-                text = text + " http://detected.link"
-                break
-
-    if not text:
-        return
-        
-
-    # منع الفلود
+    # ─── منع الفلود ───
     if s["anti_flood"]:
         count = db.count_recent(chat.id, user.id, FLOOD_WINDOW)
         if count > FLOOD_LIMIT:
@@ -693,9 +661,10 @@ async def on_message(update, context):
                 pass
             return
 
-    # منع السب
+    # ─── منع السب ───
     all_banned = list(set(db.get_words(chat.id) + BANNED_WORDS))
     found = contains_banned(text, all_banned)
+
     if found:
         try:
             await msg.delete()
@@ -728,20 +697,15 @@ async def on_message(update, context):
                 pass
         return
 
-    # منع الروابط
+    # ─── منع الروابط ───
     if s["anti_links"]:
-has_link = (
+        has_link_text = (
             "http://" in text
             or "https://" in text
             or "t.me/" in text
             or "www." in text
         )
-        if msg.entities:
-            for ent in msg.entities:
-                if ent.type in ("url", "text_link"):
-                    has_link = True
-                    break
-        if has_link:
+        if has_link_text or has_link_entity:
             try:
                 await msg.delete()
                 await context.bot.send_message(
@@ -787,8 +751,6 @@ def main():
     app.add_handler(CommandHandler("rules", cmd_rules))
     app.add_handler(CommandHandler("togglelinks", cmd_togglelinks))
     app.add_handler(CommandHandler("toggleflood", cmd_toggleflood))
-    app.add_handler(CommandHandler("toggleforward", cmd_toggleforward))
-    app.add_handler(CommandHandler("togglesticker", cmd_togglesticker))
     app.add_handler(CommandHandler("addword", cmd_addword))
     app.add_handler(CommandHandler("delword", cmd_delword))
     app.add_handler(CommandHandler("words", cmd_words))
@@ -800,13 +762,12 @@ def main():
         filters.StatusUpdate.NEW_CHAT_MEMBERS, on_new_member
     ))
 
-    # الرسائل
+    # كل الرسائل الأخرى
     app.add_handler(MessageHandler(
-        filters.ALL & ~filters.COMMAND,
-        on_message,
+        filters.ALL & ~filters.COMMAND, on_message
     ))
 
-    # مهمة تنظيف
+    # تنظيف دوري
     app.job_queue.run_repeating(cleanup_job, interval=3600, first=60)
 
     print("Bot running...")
@@ -815,3 +776,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+        
