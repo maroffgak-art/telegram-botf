@@ -665,11 +665,18 @@ async def on_message(update, context):
             )
         except TelegramError:
             pass
-        return
+        text = (msg.text or msg.caption or "").lower()
 
-    text = (msg.text or msg.caption or "").lower()
+    # فحص entities (روابط preview)
+    if msg.entities:
+        for ent in msg.entities:
+            if ent.type in ("url", "text_link"):
+                text = text + " http://detected.link"
+                break
+
     if not text:
         return
+        
 
     # منع الفلود
     if s["anti_flood"]:
@@ -723,8 +730,18 @@ async def on_message(update, context):
 
     # منع الروابط
     if s["anti_links"]:
-        if ("http://" in text or "https://" in text
-                or "t.me/" in text or "www." in text):
+has_link = (
+            "http://" in text
+            or "https://" in text
+            or "t.me/" in text
+            or "www." in text
+        )
+        if msg.entities:
+            for ent in msg.entities:
+                if ent.type in ("url", "text_link"):
+                    has_link = True
+                    break
+        if has_link:
             try:
                 await msg.delete()
                 await context.bot.send_message(
