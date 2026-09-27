@@ -764,8 +764,9 @@ def main():
 
     # كل الرسائل الأخرى
     app.add_handler(MessageHandler(
-        filters.ALL & ~filters.COMMAND, on_message
-    ))
+        filters.TEXT & ~filters.COMMAND, on_message
+    ), group=1)
+    
 
     # تنظيف دوري
     app.job_queue.run_repeating(cleanup_job, interval=3600, first=60)
