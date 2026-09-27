@@ -785,8 +785,7 @@ def main():
 
     # الرسائل
     app.add_handler(MessageHandler(
-        (filters.TEXT | filters.CAPTION | filters.Sticker.ALL
-         | filters.FORWARDED),
+        filters.ALL & ~filters.COMMAND,
         on_message,
     ))
 
